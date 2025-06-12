@@ -70,14 +70,15 @@ def find_existing(df, phone, email, cohort, assessment_week, language):
 
 def send_match_email(user_email, user_name, group_members):
     peer_info = '\n'.join([
-        f"Name: {m['name']}, Email: {m['email']}, Phone: {m['phone']}"
+        f"Name: {m['name']}\nEmail Address: {m['email']}\nWhatsApp: {m['phone']}"
         for m in group_members if m['email'] != user_email
     ])
     body = f"""Hi {user_name},
 
-You have been matched with the following peers:
-
+You have been matched with the following peer(s):
 {peer_info}
+
+Please contact your peer(s) now!
 
 Best regards,
 Peer Finder Team
@@ -87,6 +88,7 @@ Peer Finder Team
         sender=app.config['MAIL_USERNAME'],
         recipients=[user_email]
     )
+    msg.body = body
     mail.send(msg)
 
 @app.route('/')
