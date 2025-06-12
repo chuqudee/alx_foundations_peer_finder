@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <title>Admin Dashboard - PeerFinder</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background: #f6f8fa;
+            padding: 2rem;
+            max-width: 600px;
+            margin: auto;
+        }
+        h1 {
+            color: #232f3e;
+            margin-bottom: 1.5rem;
+        }
+        .btn {
+            display: inline-block;
+            background: #ff9800;
+            color: white;
+            padding: 1rem 2rem;
+            margin: 0.5rem 0;
+            border-radius: 30px;
+            text-decoration: none;
+            font-weight: 600;
+            transition: background 0.2s;
+        }
+        .btn:hover {
+            background: #ffb347;
+        }
+        p.note {
+            font-size: 0.9rem;
+            color: #666;
+            margin-top: 1rem;
+        }
+    </style>
+</head>
+<body>
+    <h1>Admin Dashboard</h1>
+    <a href="{{ url_for('download_queue') }}" class="btn">Download Queue CSV</a><br />
+    <a href="{{ url_for('download_feedback') }}" class="btn">Download Feedback CSV</a>
+    <p class="note">You will be prompted to enter the admin password before downloading.</p>
+</body>
+</html>

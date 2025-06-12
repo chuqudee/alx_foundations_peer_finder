@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <title>PeerFinder | Waiting for Match</title>
+    <!-- Google Fonts: Poppins -->
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;600;700&display=swap" rel="stylesheet" />
+    <style>
+        body {
+            font-family: 'Poppins', Arial, sans-serif;
+            margin: 0;
+            background: #f6f8fa;
+            color: #232f3e;
+        }
+        .navbar {
+            background: #232f3e;
+            padding: 1rem 2rem;
+            display: flex;
+            align-items: center;
+        }
+        .navbar .logo-img {
+            height: 32px;
+            margin-right: 12px;
+        }
+        .navbar .logo-text {
+            color: #ff9800;
+            font-weight: 700;
+            font-size: 1.5rem;
+            letter-spacing: 1px;
+        }
+        .container {
+            max-width: 500px;
+            margin: 3rem auto;
+            background: #fff;
+            border-radius: 16px;
+            box-shadow: 0 6px 24px rgba(0,0,0,0.07);
+            padding: 2rem;
+            text-align: center;
+        }
+        h1 {
+            color: #232f3e;
+            font-size: 2rem;
+            font-weight: 700;
+        }
+        .info {
+            font-size: 1.1rem;
+            color: #444;
+            margin: 1.5rem 0;
+        }
+        .find-btn {
+            background: #ff9800;
+            color: #fff;
+            border: none;
+            padding: 1rem 2.5rem;
+            font-size: 1.1rem;
+            font-weight: 600;
+            border-radius: 30px;
+            cursor: pointer;
+            transition: background 0.2s;
+            margin-bottom: 1.5rem;
+        }
+        .find-btn:hover {
+            background: #ffb347;
+        }
+        .back-link {
+            display: inline-block;
+            margin-top: 1.5rem;
+            color: #232f3e;
+            text-decoration: none;
+            font-weight: 500;
+        }
+        .back-link:hover {
+            text-decoration: underline;
+        }
+        @media (max-width: 700px) {
+            .container {
+                margin: 1rem;
+                padding: 1rem;
+            }
+            h1 {
+                font-size: 1.4rem;
+            }
+        }
+    </style>
+    <script>
+        async function tryMatch() {
+            const user_id = "{{ user_id }}";
+            const response = await fetch('/match', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({user_id})
+            });
+            const data = await response.json();
+            if (data.matched) {
+                window.location.href = "/matched/" + user_id;
+            } else {
+                alert("No match yet. Try again soon!");
+            }
+        }
+    </script>
+</head>
+<body>
+    <div class="navbar">
+        <img src="{{ url_for('static', filename='alx_icon-300x169.png') }}" class="logo-img" alt="ALX Logo" />
+        <span class="logo-text">PeerFinder</span>
+    </div>
+    <div class="container">
+        <h1>Waiting to Be Matched</h1>
+        <div class="info">
+            Your request is in the queue.<br>
+            As soon as a suitable peer or group is available, you'll be matched.<br>
+            <br>
+            <strong>Your ID:</strong> <span style="color:#ff9800;">{{ user_id }}</span>
+            <br>
+            Please COPY your ID number! You will need this to check your status.
+        </div>
+        <button class="find-btn" onclick="tryMatch()">Find Matches Now</button>
+        <br>
+        <a href="{{ url_for('index') }}" class="back-link">&larr; Back to Home</a>
+    </div>
+</body>
+</html>
