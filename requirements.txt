@@ -1,0 +1,10 @@
+Flask
+pandas
+Flask-SQLAlchemy
+psycopg2-binary
+Flask-Migrate
+Flask-Mail
+gunicorn
+gspread
+oauth2client
+dropbox
