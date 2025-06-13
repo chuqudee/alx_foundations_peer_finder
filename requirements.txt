@@ -1,6 +1,6 @@
 Flask
 pandas
-Flask-SQLAlchemy
+boto3
 psycopg2-binary
 Flask-Migrate
 Flask-Mail
