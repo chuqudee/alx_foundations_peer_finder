@@ -2,36 +2,52 @@ import os
 import uuid
 import io
 from datetime import datetime
-from flask import Flask, request, jsonify, render_template, redirect, url_for, Response
-import dropbox
+from dotenv import load_dotenv
+from flask import Flask, request, jsonify, render_template, redirect, url_for, Response, flash
 import pandas as pd
+import boto3
+from botocore.exceptions import ClientError
 from flask_mail import Mail, Message
 
 app = Flask(__name__)
-app.secret_key = os.environ.get('SECRET_KEY', 'default_secret_key')  # Secure key from env[1]
+
+# === ENVIRONMENT VARIABLES REQUIRED ===
+# Set these in your Render dashboard:
+SECRET_KEY = "e8f3473b716cfe3760fd522e38a3bd5b9909510b0ef003f050e0a445fa3a6e83"
+AWS_ACCESS_KEY_ID = os.environ.get('WS_ACCESS_KEY_ID')
+AWS_SECRET_ACCESS_KEY = os.environ.get('AWS_SECRET_ACCESS_KEY')
+AWS_DEFAULT_REGION = os.environ.get('AWS_DEFAULT_REGION')
+
+app.secret_key = os.environ.get('SECRET_KEY', 'default_secret_key')  # [REQUIRED]
 
 # Flask-Mail configuration
 app.config.update(
     MAIL_SERVER='smtp.gmail.com',
     MAIL_PORT=587,
     MAIL_USE_TLS=True,
-    MAIL_USERNAME='cokereafor@alxafrica.com',  # Your email here
-    MAIL_PASSWORD='moqancerplnpisro',          # Your app password here
+    MAIL_USERNAME="alxfoundations@alxafrica.com",      # [REQUIRED]
+    MAIL_PASSWORD="arkwdwrsgitqbpdv",      # [REQUIRED]
 )
 mail = Mail(app)
 
-DROPBOX_ACCESS_TOKEN = os.environ.get('DROPBOX_ACCESS_TOKEN')
-if not DROPBOX_ACCESS_TOKEN:
-    raise Exception("DROPBOX_ACCESS_TOKEN environment variable not set")
+# AWS S3 configuration from environment variables
+AWS_S3_BUCKET = "alx-peer-finder-storage-bucket"        # [REQUIRED]
+if not AWS_S3_BUCKET:
+    raise Exception("AWS_S3_BUCKET environment variable not set")
 
-dbx = dropbox.Dropbox(DROPBOX_ACCESS_TOKEN)
-CSV_PATH = '/students.csv'
+# These are automatically picked up by boto3 if set in the environment:
+# AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_DEFAULT_REGION
+
+s3 = boto3.client('s3')
+CSV_OBJECT_KEY = 'students.csv'  # S3 object key for the CSV file
+
+ADMIN_PASSWORD = "alx_admin_2025_peer_finder"
 
 def download_csv():
     try:
-        metadata, res = dbx.files_download(CSV_PATH)
-        csv_content = res.content.decode('utf-8')
-        df = pd.read_csv(io.StringIO(csv_content))
+        obj = s3.get_object(Bucket=AWS_S3_BUCKET, Key=CSV_OBJECT_KEY)
+        data = obj['Body'].read().decode('utf-8')
+        df = pd.read_csv(io.StringIO(data))
         # Ensure phone is string to avoid float formatting issues
         if 'phone' in df.columns:
             df['phone'] = df['phone'].astype(str).str.strip()
@@ -42,10 +58,14 @@ def download_csv():
         if 'matched_timestamp' not in df.columns:
             df['matched_timestamp'] = ''
         return df
-    except dropbox.exceptions.ApiError:
-        columns = ['id', 'name', 'phone', 'email', 'cohort', 'assessment_week', 'language',
-                   'timestamp', 'matched', 'group_size', 'group_id', 'unpair_reason', 'matched_timestamp']
-        return pd.DataFrame(columns=columns)
+    except ClientError as e:
+        if e.response['Error']['Code'] == 'NoSuchKey':
+            # File does not exist, return empty DataFrame with columns
+            columns = ['id', 'name', 'phone', 'email', 'cohort', 'assessment_week', 'language',
+                       'timestamp', 'matched', 'group_size', 'group_id', 'unpair_reason', 'matched_timestamp']
+            return pd.DataFrame(columns=columns)
+        else:
+            raise
 
 def upload_csv(df):
     # Ensure phone column is string before upload to prevent float formatting
@@ -53,8 +73,7 @@ def upload_csv(df):
         df['phone'] = df['phone'].astype(str).str.strip()
     csv_buffer = io.StringIO()
     df.to_csv(csv_buffer, index=False)
-    csv_buffer.seek(0)
-    dbx.files_upload(csv_buffer.read().encode('utf-8'), CSV_PATH, mode=dropbox.files.WriteMode.overwrite)
+    s3.put_object(Bucket=AWS_S3_BUCKET, Key=CSV_OBJECT_KEY, Body=csv_buffer.getvalue())
 
 def find_existing(df, phone, email, cohort, assessment_week, language):
     mask = (
@@ -75,7 +94,7 @@ def send_match_email(user_email, user_name, group_members):
     ])
     body = f"""Hi {user_name},
 
-You have been matched with the following peer(s):
+You have been matched with the following peers:
 {peer_info}
 
 Please contact your peer(s) now!
@@ -286,17 +305,29 @@ def unpair():
 def admin():
     return render_template('admin.html')
 
-@app.route('/admin/download_csv')
-def download_csv_route():
-    df = download_csv()
-    csv_buffer = io.StringIO()
-    df.to_csv(csv_buffer, index=False)
-    csv_buffer.seek(0)
-    return Response(
-        csv_buffer,
-        mimetype='text/csv',
-        headers={"Content-Disposition": "attachment;filename=students.csv"}
-    )
+@app.route('/admin/download_csv', methods=['GET', 'POST'])
+def download_queue():
+    if request.method == 'POST':
+        password = request.form.get('password', '')
+        if password == ADMIN_PASSWORD:
+            df = download_csv()
+            csv_buffer = io.StringIO()
+            df.to_csv(csv_buffer, index=False)
+            csv_buffer.seek(0)
+            return Response(
+                csv_buffer.getvalue(),
+                mimetype='text/csv',
+                headers={"Content-Disposition": "attachment;filename=students.csv"}
+            )
+        else:
+            flash("Incorrect password. Access denied.")
+            return redirect(url_for('download_queue'))
+    return render_template('password_prompt.html', file_type='Queue CSV')
+
+@app.route('/admin/download_feedback')
+def download_feedback():
+    # Implement your feedback CSV download logic here
+    return "Feedback download not implemented yet", 501
 
 @app.route('/disclaimer')
 def disclaimer():
