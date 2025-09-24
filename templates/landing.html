@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PeerFinder | Find Your Learning Partner</title>
+    <link rel="icon" type="image/png" href="static/favicon_io/favicon-32x32.png" />
+    <!-- Google Fonts: Poppins -->
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;600;700&display=swap" rel="stylesheet" />
+    <!-- International Telephone Input CSS -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/intl-tel-input/17.0.8/css/intlTelInput.css">
+    <style>
+        body {
+            font-family: 'Poppins', Arial, sans-serif;
+            margin: 0;
+            background: #002b56;
+            color: #222;
+        }
+        .navbar {
+            background: #27DEF2;
+            padding: 1rem 2rem;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .navbar .logo {
+            color: #5648B7;
+            font-weight: 700;
+            font-size: 1.5rem;
+            letter-spacing: 1px;
+        }
+        .navbar-left {
+            display: flex;
+            align-items: center;
+        }
+        .admin-link {
+            text-decoration: none;
+            color: #5648B7;
+            font-weight: 600;
+            padding: 0.5rem 1rem;
+            border-radius: 5px;
+            transition: background-color 0.2s;
+        }
+        .admin-link:hover {
+            background-color: rgba(255,255,255,0.2);
+        }
+        .hero {
+            background: linear-gradient(90deg, #5648B7 0%, #5648B7 100%);
+            color: #d1dbf8;
+            padding: 1rem 4rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            min-height: 300px;
+            box-sizing: border-box;
+        }
+        .hero-content {
+            max-width: 600px;
+            flex: 0 0 auto;
+        }
+        .hero h1 {
+            font-size: 2.5rem;
+            font-weight: 700;
+            margin-bottom: 0.5rem;
+        }
+        .hero p {
+            font-size: 1.2rem;
+            margin-bottom: 2rem;
+            line-height: 1.5;
+        }
+        .hero-buttons {
+            display: flex;
+            gap: 1rem;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+        .hero-image-container {
+            width: calc(40% - 2rem);
+            height: 100%;
+            display: flex;
+            justify-content: center;
+            align-items: right;
+            overflow: hidden;
+        }
+        .hero-image-container img {
+            max-width: 100%;
+            max-height: 100%;
+            width: auto;
+            height: auto;
+            object-fit: contain;
+        }
+        .hero-image-container {
+            width: 560px;   /* fixed width */
+            height: 315px;  /* fixed height */
+            max-width: 100%; /* make sure it is responsive on smaller screens */
+            margin: 0 auto; /* center horizontally */
+        }
+        .hero-image-container iframe {
+            width: 100%;
+            height: 100%;
+            border: 0;
+        }
+        .btn {
+            color: #fff;
+            border: none;
+            padding: 1rem 2rem;
+            font-size: 1rem;
+            font-weight: 600;
+            border-radius: 30px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            text-decoration: none;
+            display: inline-block;
+            text-align: center;
+            min-width: 200px;
+            box-sizing: border-box;
+        }
+        .btn-primary {
+            background: #002b56;
+        }
+        .btn-primary:hover {
+            background: #27DEF2;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+        }
+        .btn-secondary {
+            background: #002b56;
+        }
+        .btn-secondary:hover {
+            background: #27DEF2;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+        }
+        .section {
+            max-width: 900px;
+            margin: 2rem auto;
+            background: #d1dbf8;
+            border-radius: 18px;
+            box-shadow: 0 6px 24px rgba(0,0,0,0.07);
+            padding: 2rem;
+        }
+        .section-title {
+            font-size: 1.7rem;
+            font-weight: 600;
+            color: #232f3e;
+            margin-bottom: 1rem;
+        }
+        .section-content {
+            font-size: 1.1rem;
+            color: #333;
+            margin-bottom: 1.5rem;
+            line-height: 1.6;
+        }
+        .connect-section {
+            max-width: 900px;
+            margin: 2rem auto;
+            background: #d1dbf8;
+            border-radius: 18px;
+            box-shadow: 0 6px 24px rgba(0,0,0,0.07);
+            padding: 2rem;
+            text-align: center;
+        }
+        .connect-section h2 {
+            font-size: 1.8rem;
+            font-weight: 700;
+            color: #232f3e;
+            margin-bottom: 1.5rem;
+        }
+        .connect-buttons {
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+            align-items: center;
+        }
+
+        .connect-buttons a {
+            display: inline-block;
+            background-color: #5648B7;
+            color: white;
+            font-weight: 600;
+            font-size: 1.1rem;
+            padding: 1rem 1.5rem;
+            border-radius: 30px;
+            text-decoration: none;
+            min-width: 360px; /* wide enough to keep text in one line */
+            box-sizing: border-box;
+            transition: background-color 0.3s ease;
+            white-space: nowrap; /* prevent wrapping */
+        }
+        .connect-buttons a:hover {
+            background-color: #27DEF2;
+            color: #002b56;
+        }
+        @media (max-width: 480px) {
+            .connect-buttons a {
+                min-width: auto;
+                width: 100%;
+                white-space: normal;
+                text-align: center;
+            }
+        }
+        .connect-buttons a {
+        display: inline-block;
+        padding: 1rem 1.5rem;
+        margin: 0.5rem;
+        border-radius: 30px;
+        font-weight: 600;
+        font-size: 1.1rem;
+        text-decoration: none;
+        color: #fff;
+        background-color: #5648B7;  /* default color */
+        transition: background-color 0.3s ease;
+        }
+
+        .connect-buttons a:hover {
+        background-color: #27DEF2;
+        color: #002b56;
+        }
+
+        /* Special style for Offer Support link */
+        .connect-buttons a.offer-support {
+        background-color: #067420;  /* Bootstrap green - #067420 - bring back after week 5 */
+        color: white;
+        }
+
+        .connect-buttons a.offer-support:hover {
+        background-color: #27DEF2;  /* Darker green on hover */
+        color: white;
+        } 
+
+
+        .section.illustration .image-title-container {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 1.1rem;
+            padding: 1rem 0;
+        }
+
+        .section.illustration img {
+            max-width: 90px !important;      /* Makes the logo much smaller */
+            width: 100%;
+            height: auto;
+            margin-bottom: 0.5rem;
+        }
+
+        .section.illustration .program-title {
+            font-weight: 800;
+            color: #002b56;
+            margin: 0;
+            font-size: 3.9rem;   /* Increased further: adjust up to 4rem if you want even bigger */
+            text-align: center;
+            letter-spacing: 1.5px;
+            line-height: 1.1;
+        }
+
+        /* Remove this after week 5 */
+        .connect-buttons a.disabled {
+        background-color: #999 !important;
+        color: #ddd !important;
+        pointer-events: none;
+        cursor: not-allowed;
+        position: relative;
+        }
+
+        .connect-buttons a.disabled:hover {
+        /* Option 1: default red 'not-allowed' cursor */
+        cursor: not-allowed;
+        box-shadow: 0 0 8px 3px rgba(255, 0, 0, 0.6);
+        /* Option 2: or use the custom icon */
+        /* cursor: url('https://cdn-icons-png.flaticon.com/512/1828/1828665.png') 16 16, not-allowed; */
+        }
+
+   </style>
+</head>
+<body>
+    <div class="navbar">
+        <div class="navbar-left">
+            <img src="static/alx_icon-300x169.png" style="height:40px; vertical-align:middle; margin-right:10px;" alt="ALX Logo">
+            <span class="logo">PeerFinder</span>
+        </div>
+        <a href="{{ url_for('admin') }}" class="admin-link">Admin</a>
+    </div>
+    <div class="hero">
+        <div class="hero-content">
+            <h1>For Professional Foundations</h1>
+            <h2>Find Your Perfect Learning Partner, Group or Peer Mentor</h2>
+            <p>Connect with fellow learners in your cohort to collaborate on projects and milestones — at your pace, one-on-one or in groups.</p>
+            <div class="hero-buttons">
+                <!-- <a href="#join-form" class="btn btn-primary">Find Your Learning Partner Now</a> -->
+                <a href="{{ url_for('check_match') }}" class="btn btn-secondary">Check Match Status</a>
+            </div>
+        </div>
+        <div class="hero-image-container">
+            <iframe 
+                src="https://www.youtube.com/embed/QfHu33-2aR0" 
+                title="YouTube video player" 
+                frameborder="0" 
+                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" 
+                allowfullscreen>
+            </iframe>
+        </div>
+    </div>
+    
+    <!-- New connection options section. Uncomment this after week 5 -->
+    <div class="connect-section">
+    <h2>How would you like to connect?</h2>
+    <div class="connect-buttons">
+        <a href="{{ url_for('start_form', connection_type='find') }}">Find a Study Buddy/Accountability Partner/Group</a>
+        <a href="{{ url_for('start_form', connection_type='offer') }}" class="offer-support">
+        Offer Support to Someone ⭐⭐⭐
+        </a>
+        <a href="{{ url_for('start_form', connection_type='need') }}">I need Support (I am Behind / Struggling)</a>
+    </div>
+    </div> 
+
+    <!--<div class="connect-section">
+    <h2>Connect with a Support Star/Guided Star</h2>
+        <div class="connect-buttons">
+            <a href="{{ url_for('start_form', connection_type='find') }}">Find a Study Buddy/Accountability Partner/Group</a>
+
+            <a href="javascript:void(0);" class="offer-support disabled" title="Coming soon!">
+            Offer Support to Someone ⭐⭐⭐
+            <span class="tooltip">(Coming soon)</span>
+            </a>
+
+            <a href="javascript:void(0);" class="need-support disabled" title="Coming soon!">
+            I need Support
+            <span class="tooltip">(Coming soon)</span>
+            </a>
+        </div>
+    </div> -->
+
+    <div class="section">
+        <div class="section-title">Collaborate, Grow, and Achieve Together</div>
+        <div class="section-content">
+            Learning is more rewarding when shared. PeerFinder helps you discover learners who match your rhythm and goals, so you can support each other, exchange ideas, and stay motivated throughout your journey.
+        </div>
+        <div class="section-title">Tailored Connections for Meaningful Collaboration</div>
+        <div class="section-content">
+            Whether you prefer focused one-on-one partnerships or dynamic groups of three or five, PeerFinder matches you with peers who have similar progress and commitment levels — making teamwork seamless and effective. And if you're behind or facing challenges, you can pair with a supportive peer to help you catch up and finish strong before the course ends.
+        </div>
+    </div>
+</body>
+
+</html>
+
+
+
+
