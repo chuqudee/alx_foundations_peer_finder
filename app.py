@@ -27,7 +27,7 @@ app.config.update(
     MAIL_PORT=587,
     MAIL_USE_TLS=True,
     MAIL_USERNAME="alxfoundations@alxafrica.com",  # [REQUIRED]
-    MAIL_PASSWORD="arkwdwrsgitqbpdv",         # [REQUIRED]
+    MAIL_PASSWORD=EMAIL_APP_PASSWORD,         # [REQUIRED]
 )
 mail = Mail(app)
 
@@ -546,4 +546,5 @@ def disclaimer():
     return render_template('disclaimer.html')
 
 if __name__ == '__main__':
+
     app.run(debug=True)
