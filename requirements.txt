@@ -1,9 +1,9 @@
 Flask
 pandas
 boto3
-psycopg2-binary
 Flask-Migrate
 Flask-Mail
 gunicorn
-dropbox
-python-dotenv
+google-api-python-client>=2.0.0
+google-auth-oauthlib>=0.4.1
+google-auth-httplib2>=0.1.0
