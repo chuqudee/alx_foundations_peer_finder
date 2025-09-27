@@ -1,5 +1,6 @@
 import os
 import uuid
+import json
 import io
 from datetime import datetime, timedelta, timezone
 from flask import Flask, request, jsonify, render_template, redirect, url_for, Response, flash, session
@@ -37,39 +38,32 @@ if not AWS_S3_BUCKET:
     raise Exception("AWS_S3_BUCKET environment variable not set")
 
 s3 = boto3.client('s3')
-CSV_OBJECT_KEY = 'PF_peer-matcing_data.csv'
+CSV_OBJECT_KEY = 'test_peer-matcing_data.csv'
 
 ADMIN_PASSWORD = "alx_admin_2025_peer_finder"
 
 # Gmail API configuration
 SCOPES = ['https://www.googleapis.com/auth/gmail.send']
-CREDENTIALS_FILE = 'client_secret_pf.json'
 TOKEN_FILE = 'token.json'
 
 def get_gmail_service():
     creds = None
-    # Load existing token if available
+    token_data = os.environ.get('GOOGLE_TOKEN')
+    if token_data and not os.path.exists(TOKEN_FILE):
+        with open(TOKEN_FILE, 'w') as token:
+            token.write(token_data)
     if os.path.exists(TOKEN_FILE):
         creds = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
-    # If no valid credentials, authenticate
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
-            try:
-                creds.refresh(Request())
-            except Exception as e:
-                logger.error(f"Failed to refresh token: {str(e)}")
-                raise
+            creds.refresh(Request())
         else:
-            try:
-                flow = InstalledAppFlow.from_client_secrets_file(CREDENTIALS_FILE, SCOPES)
-                flow.redirect_uri = 'http://localhost:5000/oauth2callback'
-                creds = flow.run_local_server(port=5000, open_browser=True)
-                # Save credentials for reuse
-                with open(TOKEN_FILE, 'w') as token:
-                    token.write(creds.to_json())
-            except Exception as e:
-                logger.error(f"Failed to authenticate: {str(e)}")
-                raise
+            client_secrets = json.loads(os.environ.get('GOOGLE_CLIENT_SECRETS'))
+            flow = InstalledAppFlow.from_client_config(client_secrets, SCOPES)
+            flow.redirect_uri = 'https://alx-foundations-peer-finder.onrender.com/oauth2callback'
+            creds = flow.run_local_server(port=5000)
+            with open(TOKEN_FILE, 'w') as token:
+                token.write(creds.to_json())
     return build('gmail', 'v1', credentials=creds)
 
 def send_waiting_email(user_email, user_name, user_id):
@@ -154,7 +148,7 @@ Peer Finder Team
 def authorize():
     try:
         flow = InstalledAppFlow.from_client_secrets_file(CREDENTIALS_FILE, SCOPES)
-        flow.redirect_uri = 'http://localhost:5000/oauth2callback'
+        flow.redirect_uri = 'https://alx-foundations-peer-finder.onrender.com/oauth2callback'
         authorization_url, state = flow.authorization_url(
             access_type='offline',
             include_granted_scopes='true',
@@ -602,5 +596,6 @@ def disclaimer():
 
 if __name__ == '__main__':
     app.run(debug=True, port=5000)
+
 
 
