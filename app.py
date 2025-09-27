@@ -2,13 +2,25 @@ import os
 import uuid
 import io
 from datetime import datetime, timedelta, timezone
-from flask import Flask, request, jsonify, render_template, redirect, url_for, Response, flash
-from flask import current_app, session
+from flask import Flask, request, jsonify, render_template, redirect, url_for, Response, flash, session
 import pandas as pd
 import boto3
 from botocore.exceptions import ClientError
-from flask_mail import Mail, Message
 import math
+from googleapiclient.discovery import build
+from google_auth_oauthlib.flow import InstalledAppFlow
+from google.auth.transport.requests import Request
+from google.oauth2.credentials import Credentials
+import base64
+from email.mime.text import MIMEText
+import logging
+
+# Allow HTTP for localhost during OAuth (for local testing)
+#os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
+
+# Configure logging
+logging.basicConfig(level=logging.ERROR)
+logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
@@ -17,100 +29,78 @@ SECRET_KEY = "e8f3473b716cfe3760fd522e38a3bd5b9909510b0ef003f050e0a445fa3a6e83"
 AWS_ACCESS_KEY_ID = os.environ.get('AWS_ACCESS_KEY_ID')
 AWS_SECRET_ACCESS_KEY = os.environ.get('AWS_SECRET_ACCESS_KEY')
 AWS_DEFAULT_REGION = os.environ.get('AWS_DEFAULT_REGION')
-EMAIL_APP_PASSWORD = os.environ.get('APP_PASSWORD')
-
 app.secret_key = os.environ.get('SECRET_KEY', 'default_secret_key')  # [REQUIRED]
 
-# Flask-Mail configuration
-app.config.update(
-    MAIL_SERVER='smtp.gmail.com',
-    MAIL_PORT=587,
-    MAIL_USE_TLS=True,
-    MAIL_USERNAME="alxfoundations@alxafrica.com",  # [REQUIRED]
-    MAIL_PASSWORD=EMAIL_APP_PASSWORD,         # [REQUIRED]
-)
-mail = Mail(app)
-
 # AWS S3 configuration
-AWS_S3_BUCKET = "alx-peer-finder-storage-bucket"
+AWS_S3_BUCKET = "alx-peerfinder-storage-bucket"
 if not AWS_S3_BUCKET:
     raise Exception("AWS_S3_BUCKET environment variable not set")
 
 s3 = boto3.client('s3')
-CSV_OBJECT_KEY = 'PF_peer-matcing_data.csv'
+CSV_OBJECT_KEY = 'test_peer-matcing_data.csv'
 
 ADMIN_PASSWORD = "alx_admin_2025_peer_finder"
 
-# === Helper Functions ===
+# Gmail API configuration
+SCOPES = ['https://www.googleapis.com/auth/gmail.send']
+CREDENTIALS_FILE = 'client_secret_pf.json'
+TOKEN_FILE = 'token.json'
 
-def download_csv():
+def get_gmail_service():
+    creds = None
+    # Load existing token if available
+    if os.path.exists(TOKEN_FILE):
+        creds = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
+    # If no valid credentials, authenticate
+    if not creds or not creds.valid:
+        if creds and creds.expired and creds.refresh_token:
+            try:
+                creds.refresh(Request())
+            except Exception as e:
+                logger.error(f"Failed to refresh token: {str(e)}")
+                raise
+        else:
+            try:
+                flow = InstalledAppFlow.from_client_secrets_file(CREDENTIALS_FILE, SCOPES)
+                flow.redirect_uri = 'http://localhost:5000/oauth2callback'
+                creds = flow.run_local_server(port=5000, open_browser=True)
+                # Save credentials for reuse
+                with open(TOKEN_FILE, 'w') as token:
+                    token.write(creds.to_json())
+            except Exception as e:
+                logger.error(f"Failed to authenticate: {str(e)}")
+                raise
+    return build('gmail', 'v1', credentials=creds)
+
+def send_waiting_email(user_email, user_name, user_id):
+    confirm_link = url_for('check_match', _external=True)
+    body = f"""Hi {user_name},
+
+Waiting to Be Matched
+
+Your request is in the queue.
+As soon as a suitable peer or group is available, you'll be matched.
+Kindly copy your ID below to check your status later:
+
+Your ID: {user_id}
+Check your status here: {confirm_link}
+
+Best regards,
+Peer Finder Team
+"""
+    message = MIMEText(body)
+    message['to'] = user_email
+    message['from'] = 'alxfoundations@alxafrica.com'
+    message['subject'] = 'PeerFinder - Waiting to Be Matched'
+    message['reply-to'] = 'alxfoundations@alxafrica.com'
+    raw = base64.urlsafe_b64encode(message.as_bytes()).decode()
     try:
-        obj = s3.get_object(Bucket=AWS_S3_BUCKET, Key=CSV_OBJECT_KEY)
-        data = obj['Body'].read().decode('utf-8')
-        df = pd.read_csv(io.StringIO(data))
-        # Normalize email and phone
-        if 'email' in df.columns:
-            df['email'] = df['email'].astype(str).str.lower().str.strip()
-        if 'phone' in df.columns:
-            df['phone'] = df['phone'].astype(str).str.strip()
-            df['phone'] = df['phone'].apply(lambda x: '+' + x if x and not x.startswith('+') else x)
-        if 'matched' in df.columns:
-            df['matched'] = df['matched'].astype(str).str.upper() == 'TRUE'
-        else:
-            df['matched'] = False
-        # Add missing columns if absent
-        expected_columns = [
-            'id', 'name', 'phone', 'email', 'country', 'language', 'cohort', 'topic_module',
-            'learning_preferences', 'availability', 'preferred_study_setup', 'kind_of_support',
-            'connection_type', 'timestamp', 'matched', 'group_id', 'unpair_reason', 'matched_timestamp',
-            'match_attempted'
-        ]
-        for col in expected_columns:
-            if col not in df.columns:
-                if col == 'matched' or col == 'match_attempted':
-                    df[col] = False
-                else:
-                    df[col] = ''
-        # Explicitly set dtypes for string columns to avoid FutureWarning
-        string_columns = [
-            'id', 'name', 'phone', 'email', 'country', 'language', 'cohort', 'topic_module',
-            'learning_preferences', 'availability', 'preferred_study_setup', 'kind_of_support',
-            'connection_type', 'timestamp', 'group_id', 'unpair_reason', 'matched_timestamp'
-        ]
-        for col in string_columns:
-            df[col] = df[col].astype('object')
-        return df
-    except ClientError as e:
-        if e.response['Error']['Code'] == 'NoSuchKey':
-            columns = [
-                'id', 'name', 'phone', 'email', 'country', 'language', 'cohort', 'topic_module',
-                'learning_preferences', 'availability', 'preferred_study_setup', 'kind_of_support',
-                'connection_type', 'timestamp', 'matched', 'group_id', 'unpair_reason', 'matched_timestamp',
-                'match_attempted'
-            ]
-            # Create empty DataFrame with explicit dtypes
-            dtypes = {col: 'object' for col in columns}
-            dtypes['matched'] = bool
-            dtypes['match_attempted'] = bool
-            return pd.DataFrame(columns=columns).astype(dtypes)
-        else:
-            raise
-
-def upload_csv(df):
-    if 'phone' in df.columns:
-        df['phone'] = df['phone'].astype(str).str.strip()
-        df['phone'] = df['phone'].apply(lambda x: '+' + x if x and not x.startswith('+') else x)
-    if 'email' in df.columns:
-        df['email'] = df['email'].astype(str).str.lower().str.strip()
-    csv_buffer = io.StringIO()
-    df.to_csv(csv_buffer, index=False)
-    s3.put_object(Bucket=AWS_S3_BUCKET, Key=CSV_OBJECT_KEY, Body=csv_buffer.getvalue())
-
-def availability_match(a1, a2):
-    # Flexible matches any, else must match or one must be flexible
-    if a1 == 'Flexible' or a2 == 'Flexible':
-        return True
-    return a1 == a2
+        service = get_gmail_service()
+        service.users().messages().send(userId='me', body={'raw': raw}).execute()
+        logger.info(f"Sent waiting email to {user_email}")
+    except Exception as e:
+        logger.error(f"Failed to send email to {user_email}: {str(e)}")
+        raise
 
 def send_match_email(user_email, user_name, group_members):
     peer_info_list = []
@@ -145,57 +135,139 @@ Thank you for helping create a respectful and encouraging learning community.
 Best regards,
 Peer Finder Team
 """
-    msg = Message(
-        subject="You've been matched!",
-        sender=app.config['MAIL_USERNAME'],
-        recipients=[user_email]
-    )
-    msg.body = body
-    mail.send(msg)
+    message = MIMEText(body)
+    message['to'] = user_email
+    message['from'] = 'alxfoundations@alxafrica.com'
+    message['subject'] = "You've been matched!"
+    message['reply-to'] = 'alxfoundations@alxafrica.com'
+    raw = base64.urlsafe_b64encode(message.as_bytes()).decode()
+    try:
+        service = get_gmail_service()
+        service.users().messages().send(userId='me', body={'raw': raw}).execute()
+        logger.info(f"Sent match email to {user_email}")
+    except Exception as e:
+        logger.error(f"Failed to send email to {user_email}: {str(e)}")
+        raise
 
-def send_waiting_email(user_email, user_name, user_id):
-    confirm_link = url_for('check_match', _external=True)
-    body = f"""Hi {user_name},
+# New route to initiate OAuth flow
+@app.route('/authorize')
+def authorize():
+    try:
+        flow = InstalledAppFlow.from_client_secrets_file(CREDENTIALS_FILE, SCOPES)
+        flow.redirect_uri = 'http://localhost:5000/oauth2callback'
+        authorization_url, state = flow.authorization_url(
+            access_type='offline',
+            include_granted_scopes='true',
+            prompt='consent'
+        )
+        session['state'] = state
+        return redirect(authorization_url)
+    except Exception as e:
+        logger.error(f"Failed to start OAuth flow: {str(e)}")
+        flash("Failed to start authorization. Please check logs.", "error")
+        return redirect(url_for('landing'))
 
-Waiting to Be Matched
+@app.route('/oauth2callback')
+def oauth2callback():
+    try:
+        state = session.get('state')
+        flow = InstalledAppFlow.from_client_secrets_file(CREDENTIALS_FILE, SCOPES, state=state)
+        flow.redirect_uri = 'https://alx-foundations-peer-finder.onrender.com/oauth2callback'
+        flow.fetch_token(authorization_response=request.url)
+        creds = flow.credentials
+        with open(TOKEN_FILE, 'w') as token:
+            token.write(creds.to_json())
+        logger.info("Successfully generated token.json")
+        flash("Authorization successful. Token generated.", "success")
+        return redirect(url_for('landing'))
+    except Exception as e:
+        logger.error(f"OAuth callback error: {str(e)}")
+        flash(f"Authorization failed: {str(e)}", "error")
+        return redirect(url_for('landing'))
 
-Your request is in the queue.
-As soon as a suitable peer or group is available, you'll be matched.
-Kindly copy your ID below to check your status later:
+# === Helper Functions ===
+def download_csv():
+    try:
+        obj = s3.get_object(Bucket=AWS_S3_BUCKET, Key=CSV_OBJECT_KEY)
+        data = obj['Body'].read().decode('utf-8')
+        df = pd.read_csv(io.StringIO(data))
+        # Normalize email and phone
+        if 'email' in df.columns:
+            df['email'] = df['email'].astype(str).str.lower().str.strip()
+        if 'phone' in df.columns:
+            df['phone'] = df['phone'].astype(str).str.strip()
+            df['phone'] = df['phone'].apply(lambda x: '+' + x if x and not x.startswith('+') else x)
+        if 'matched' in df.columns:
+            df['matched'] = df['matched'].astype(str).str.upper() == 'TRUE'
+        else:
+            df['matched'] = False
+        # Add missing columns if absent
+        expected_columns = [
+            'id', 'name', 'phone', 'email', 'country', 'language', 'cohort', 'topic_module',
+            'learning_preferences', 'availability', 'preferred_study_setup', 'kind_of_support',
+            'connection_type', 'timestamp', 'matched', 'group_id', 'unpair_reason', 'matched_timestamp',
+            'match_attempted'
+        ]
+        for col in expected_columns:
+            if col not in df.columns:
+                if col == 'matched' or col == 'match_attempted':
+                    df[col] = False
+                else:
+                    df[col] = ''
+        # Explicitly set dtypes for string columns
+        string_columns = [
+            'id', 'name', 'phone', 'email', 'country', 'language', 'cohort', 'topic_module',
+            'learning_preferences', 'availability', 'preferred_study_setup', 'kind_of_support',
+            'connection_type', 'timestamp', 'group_id', 'unpair_reason', 'matched_timestamp'
+        ]
+        for col in string_columns:
+            df[col] = df[col].astype('object')
+        return df
+    except ClientError as e:
+        if e.response['Error']['Code'] == 'NoSuchKey':
+            columns = [
+                'id', 'name', 'phone', 'email', 'country', 'language', 'cohort', 'topic_module',
+                'learning_preferences', 'availability', 'preferred_study_setup', 'kind_of_support',
+                'connection_type', 'timestamp', 'matched', 'group_id', 'unpair_reason', 'matched_timestamp',
+                'match_attempted'
+            ]
+            dtypes = {col: 'object' for col in columns}
+            dtypes['matched'] = bool
+            dtypes['match_attempted'] = bool
+            return pd.DataFrame(columns=columns).astype(dtypes)
+        else:
+            raise
 
-Your ID: {user_id}
-Check your status here: {confirm_link}
+def upload_csv(df):
+    if 'phone' in df.columns:
+        df['phone'] = df['phone'].astype(str).str.strip()
+        df['phone'] = df['phone'].apply(lambda x: '+' + x if x and not x.startswith('+') else x)
+    if 'email' in df.columns:
+        df['email'] = df['email'].astype(str).str.lower().str.strip()
+    csv_buffer = io.StringIO()
+    df.to_csv(csv_buffer, index=False)
+    s3.put_object(Bucket=AWS_S3_BUCKET, Key=CSV_OBJECT_KEY, Body=csv_buffer.getvalue())
 
-Best regards,
-Peer Finder Team
-"""
-    msg = Message(
-        subject="PeerFinder - Waiting to Be Matched",
-        sender=current_app.config['MAIL_USERNAME'],
-        recipients=[user_email]
-    )
-    msg.body = body
-    mail.send(msg)
+def availability_match(a1, a2):
+    if a1 == 'Flexible' or a2 == 'Flexible':
+        return True
+    return a1 == a2
 
 def fallback_match_unmatched():
     df = download_csv()
     now = datetime.utcnow()
     updated = False
-
     unmatched = df[
         (df['matched'] == False) &
         (df['connection_type'] == 'find')
     ]
-
     def is_older_than_2_days(ts):
         try:
             dt = datetime.fromisoformat(ts)
             return (now - dt) > timedelta(days=2)
         except Exception:
             return False
-
     unmatched = unmatched[unmatched['timestamp'].apply(is_older_than_2_days)]
-
     for group_size in [2, 3, 5]:
         eligible = unmatched[unmatched['preferred_study_setup'] == str(group_size)]
         while len(eligible) >= group_size:
@@ -216,7 +288,6 @@ def fallback_match_unmatched():
         upload_csv(df)
 
 # === Flask Routes ===
-
 @app.route('/')
 def landing():
     return render_template('landing.html')
@@ -233,8 +304,6 @@ def join_queue():
     connection_type = data.get('connection_type')
     if connection_type not in ['find', 'offer', 'need']:
         return render_template('landing.html', error="Invalid connection type selected.")
-
-    # Parse and clean form data
     name = data.get('name', '').strip()
     phone = str(data.get('phone', '').strip())
     email = data.get('email', '').strip().lower()
@@ -244,21 +313,15 @@ def join_queue():
     topic_module = data.get('topic_module', '').strip()
     learning_preferences = data.get('learning_preferences', '').strip()
     availability = data.get('availability', '').strip()
-
-    # Normalize phone
     if not phone.startswith('+'):
         phone = '+' + phone
-
     required_fields = [name, phone, email, country, language, cohort, topic_module, learning_preferences, availability]
     if not all(required_fields):
         return render_template('form.html', connection_type=connection_type, error="Please fill all required fields.")
-
     if len(phone) < 7:
         return render_template('form.html', connection_type=connection_type, error="Please enter a valid phone number starting with a plus (+) and country code.")
-
     preferred_study_setup = ''
     kind_of_support = ''
-
     if connection_type == 'find':
         preferred_study_setup = data.get('preferred_study_setup', '').strip()
         if not preferred_study_setup or preferred_study_setup not in ['2', '3', '5']:
@@ -267,13 +330,9 @@ def join_queue():
         kind_of_support = data.get('kind_of_support', '').strip()
         if not kind_of_support:
             return render_template('form.html', connection_type=connection_type, error="Please select kind of support.")
-
     df = download_csv()
-
-    # Duplicate check based on email or phone only
     dup_mask = (df['email'] == email) | (df['phone'] == phone)
     duplicates = df[dup_mask]
-
     if not duplicates.empty:
         dup = duplicates.iloc[0]
         if dup['matched']:
@@ -282,8 +341,6 @@ def join_queue():
             return render_template('already_matched.html', user=dup, group_members=group_members.to_dict(orient='records'))
         else:
             return render_template('already_in_queue.html', user_id=dup['id'])
-
-    # No duplicates - add new user
     new_id = str(uuid.uuid4())
     timestamp = datetime.now(timezone.utc).isoformat()
     new_row = {
@@ -310,8 +367,11 @@ def join_queue():
     new_row_df = pd.DataFrame([new_row])
     df = pd.concat([df, new_row_df], ignore_index=True)
     upload_csv(df)
-
-    send_waiting_email(email, name, new_id)
+    try:
+        send_waiting_email(email, name, new_id)
+    except Exception as e:
+        logger.error(f"Failed to send waiting email in /join: {str(e)}")
+        flash("Registration successful, but failed to send confirmation email.", "warning")
     return redirect(url_for('waiting', user_id=new_id))
 
 @app.route('/waiting/<user_id>')
@@ -342,7 +402,6 @@ def match_users():
         flash("User not found. Please check your ID.", "warning")
         return jsonify({'error': 'User not found', 'redirect': url_for('waiting', user_id=user_id)}), 404
     user = user.iloc[0]
-    # Mark match attempt
     df.at[user.name, 'match_attempted'] = True
     updated = False
     if user['connection_type'] == 'find':
@@ -360,7 +419,6 @@ def match_users():
             flash("Unsupported group size.", "warning")
             upload_csv(df)
             return jsonify({'error': 'Unsupported group size', 'redirect': url_for('waiting', user_id=user_id)}), 400
-
         eligible = df[
             (df['matched'] == False) &
             (df['connection_type'] == 'find') &
@@ -371,9 +429,8 @@ def match_users():
         ]
         while len(eligible) >= group_size:
             group = eligible.iloc[:group_size]
-            # Ensure unique email and phone in the group
             if len(set(group['email'])) < group_size or len(set(group['phone'])) < group_size:
-                eligible = eligible.iloc[1:]  # Skip the first record and try again
+                eligible = eligible.iloc[1:]
                 continue
             group_id = f"group-{uuid.uuid4()}"
             now_iso = datetime.now(timezone.utc).isoformat()
@@ -382,7 +439,6 @@ def match_users():
             df.loc[group.index, 'matched_timestamp'] = now_iso
             updated = True
             eligible = eligible.iloc[group_size:]
-
     elif user['connection_type'] in ['offer', 'need']:
         country = user['country']
         cohort = user['cohort']
@@ -396,9 +452,8 @@ def match_users():
         if not eligible.empty:
             matched_user_idx = eligible.index[0]
             matched_user = df.loc[matched_user_idx]
-            # Ensure the matched user is not the same person
             if matched_user['email'] == user['email'] or matched_user['phone'] == user['phone']:
-                flash("You have not been matched yet! Check back later with your ID, by clicking on the check match status", "warning")
+                flash("You have not been matched yet! Check back later with your ID.", "warning")
                 upload_csv(df)
                 return jsonify({'matched': False, 'redirect': url_for('waiting', user_id=user_id)})
             group_id = f"group-{uuid.uuid4()}"
@@ -414,23 +469,25 @@ def match_users():
         flash("Unsupported connection type.", "warning")
         upload_csv(df)
         return jsonify({'error': 'Unsupported connection type', 'redirect': url_for('waiting', user_id=user_id)}), 400
-
     if updated:
         upload_csv(df)
-
     user = df[df['id'] == user_id].iloc[0]
     if user['matched']:
         group_id = user['group_id']
         group_members = df[df['group_id'] == group_id].to_dict(orient='records')
         for member in group_members:
             if member['email'] != 'unpaired':
-                send_match_email(member['email'], member['name'], group_members)
+                try:
+                    send_match_email(member['email'], member['name'], group_members)
+                except Exception as e:
+                    logger.error(f"Failed to send match email in /match: {str(e)}")
+                    flash("Match successful, but failed to send some emails.", "warning")
         return jsonify({
             'matched': True,
             'redirect': url_for('waiting', user_id=user_id)
         })
     else:
-        flash("You have not been matched yet! Check back later with your ID, by clicking on the check match status", "warning")
+        flash("You have not been matched yet! Check back later with your ID.", "warning")
         upload_csv(df)
         return jsonify({'matched': False, 'redirect': url_for('waiting', user_id=user_id)})
 
@@ -487,7 +544,7 @@ def unpair():
         df.at[idx, 'email'] = 'unpaired'
         df.at[idx, 'phone'] = 'unpaired'
         df.at[idx, 'topic_module'] = 'unpaired'
-        df.at[idx, 'unpair_reason'] = reason  # Do NOT change matched status as requested
+        df.at[idx, 'unpair_reason'] = reason
     upload_csv(df)
     return jsonify({'success': True})
 
@@ -531,14 +588,12 @@ def admin_fallback_match():
     if not session.get('admin_authenticated', False):
         flash('Please authenticate first.')
         return redirect(url_for('admin_fallback'))
-
     fallback_match_unmatched()
     flash("Fallback matching process executed successfully.")
     return redirect(url_for('admin'))
 
 @app.route('/admin/download_feedback')
 def download_feedback():
-    # Placeholder for feedback CSV download
     return "Feedback download not implemented yet", 501
 
 @app.route('/disclaimer')
@@ -546,5 +601,4 @@ def disclaimer():
     return render_template('disclaimer.html')
 
 if __name__ == '__main__':
-
-    app.run(debug=True)
+    app.run(debug=True, port=5000)
