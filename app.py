@@ -32,7 +32,7 @@ AWS_DEFAULT_REGION = os.environ.get('AWS_DEFAULT_REGION')
 app.secret_key = os.environ.get('SECRET_KEY', 'default_secret_key')  # [REQUIRED]
 
 # AWS S3 configuration
-AWS_S3_BUCKET = "alx-peerfinder-storage-bucket"
+AWS_S3_BUCKET = "alx-peer-finder-storage-bucket"
 if not AWS_S3_BUCKET:
     raise Exception("AWS_S3_BUCKET environment variable not set")
 
@@ -602,3 +602,4 @@ def disclaimer():
 
 if __name__ == '__main__':
     app.run(debug=True, port=5000)
+
