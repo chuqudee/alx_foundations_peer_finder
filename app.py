@@ -724,11 +724,15 @@ def auto_match_queue():
     groups_formed = []
 
     for uid in unmatched['id'].tolist():
-        current_check = df.loc[df['id'] == uid]
-        if not current_check.empty and bool(current_check.iloc[0]['matched']): continue
-        # NOTE: perform_matching now returns a 4-tuple
-        df, updated, gid, _ = perform_matching(df, uid)
-        if updated: groups_formed.append(gid)
+        try:
+            current_check = df[df['id'] == uid]
+            if not current_check.empty and bool(current_check.iloc[0]['matched']): continue
+            # FIX C: wrapped in try/except — one bad row no longer aborts the entire queue
+            df, updated, gid, _ = perform_matching(df, uid)
+            if updated: groups_formed.append(gid)
+        except Exception as e:
+            logger.error(f"Auto-match skipped user {uid}: {e}")
+            continue
 
     upload_csv(df)
     unique_groups = set(groups_formed)
@@ -769,83 +773,117 @@ def auto_match_queue():
 # --- FIXED UNPAIRING LOGIC ---
 @app.route('/api/leave-group', methods=['POST'])
 @api_wrapper
-def leave_group(user_id=None):
+def leave_group():
     data = request.get_json() or {}
-    target_id = str(user_id or data.get('user_id', '')).strip()
+    target_id = str(data.get('user_id', '')).strip()
 
     if not target_id:
         return jsonify({"error": "No User ID provided"}), 400
 
-    delete_profile = data.get('delete_profile', False)
-    reason = data.get('reason', 'User Requested')
-    ghoster_email = str(data.get('ghoster_email', '')).strip().lower()
+    delete_profile = bool(data.get('delete_profile', False))
+    reason = str(data.get('reason') or 'User Requested').strip()
+
+    # FIX A: str(None) = 'none' which is truthy — use `or ''` to guard against null from JS
+    raw_ghost = data.get('ghoster_email')
+    ghoster_email = str(raw_ghost).strip().lower() if raw_ghost not in (None, '', 'null', 'None') else ''
 
     df = download_csv()
 
-    # Safe User Look-up
-    user_rows = df[df['id'] == target_id]
-    if user_rows.empty:
-        user_rows = df[df['email'].str.lower() == target_id.lower()]
-
-    if user_rows.empty:
+    # Locate the user by UUID or email
+    user_mask = df['id'] == target_id
+    if not user_mask.any():
+        user_mask = df['email'].str.lower() == target_id.lower()
+    if not user_mask.any():
         return jsonify({"error": "User not found"}), 404
 
-    idx = user_rows.index[0]
-    user_row = df.loc[idx]
+    idx = df.index[user_mask][0]
+    user_row = df.loc[idx].copy()
 
-    # 1. Log to Unpair Reasons
+    # 1. Log the unpair reason
     try:
         df_reasons = download_csv(UNPAIR_REASONS_KEY)
-        new_reason = {'timestamp': datetime.now(timezone.utc).isoformat(), 'user_id': target_id, 'email': user_row.get('email', ''), 'program': user_row.get('program', ''), 'course': user_row.get('course', ''), 'reason': reason, 'ghoster_email': ghoster_email}
+        new_reason = {
+            'timestamp': datetime.now(timezone.utc).isoformat(),
+            'user_id': target_id,
+            'email': user_row.get('email', ''),
+            'program': user_row.get('program', ''),
+            'course': user_row.get('course', ''),
+            'reason': reason,
+            'ghoster_email': ghoster_email
+        }
         df_reasons = pd.concat([df_reasons, pd.DataFrame([new_reason])], ignore_index=True)
         upload_csv(df_reasons, UNPAIR_REASONS_KEY)
     except Exception as e:
         logger.error(f"Error saving unpair reasons: {e}")
 
-    # 2. Gentle Nudge Engine
-    if 'Ghosting' in reason and ghoster_email:
-        no_show_df = download_csv(NO_SHOW_OBJECT_KEY)
-        new_no_show = {'timestamp': datetime.now(timezone.utc).isoformat(), 'reporter': user_row.get('email', ''), 'ghoster': ghoster_email}
-        no_show_df = pd.concat([no_show_df, pd.DataFrame([new_no_show])], ignore_index=True)
-        upload_csv(no_show_df, NO_SHOW_OBJECT_KEY)
+    # 2. Gentle Nudge Engine — only fires if reason contains "Ghosting" AND a valid email is given
+    # FIX A (continued): also require '@' so we never process 'none', '', or other junk values
+    if 'Ghosting' in reason and ghoster_email and '@' in ghoster_email:
+        try:
+            no_show_df = download_csv(NO_SHOW_OBJECT_KEY)
+            new_no_show = {
+                'timestamp': datetime.now(timezone.utc).isoformat(),
+                'reporter': user_row.get('email', ''),
+                'ghoster': ghoster_email
+            }
+            no_show_df = pd.concat([no_show_df, pd.DataFrame([new_no_show])], ignore_index=True)
+            upload_csv(no_show_df, NO_SHOW_OBJECT_KEY)
+        except Exception as e:
+            logger.error(f"Error saving no-show record: {e}")
 
-        ghoster_rows = df[df['email'] == ghoster_email]
+        ghoster_rows = df[df['email'] == ghoster_email].copy()
         for g_idx, g_user in ghoster_rows.iterrows():
             g_name = g_user.get('name', 'Learner')
             g_prog = g_user.get('program', user_row.get('program', ''))
             g_type = g_user.get('connection_type', '')
 
             subject = "PeerFinder - Session Attendance Notice"
-            body = f"Hi <strong>{g_name}</strong>,<br/><br/>Your matched peer has flagged you for ghosting / not showing up to your recent session. <br/><br/>We understand juggling life and learning can be tough! When you have more capacity and are ready to try again, please feel free to reregister on PeerFinder.<br/><br/>Best regards,<br/><strong>Peer Finder Team</strong>"
-            send_email(ghoster_email, subject, body, g_prog, is_html=True)
+            body = (
+                f"Hi <strong>{g_name}</strong>,<br/><br/>Your matched peer has flagged you for not showing "
+                f"up to your recent session. We understand juggling life and learning can be tough! "
+                f"When you have more capacity and are ready to try again, feel free to reregister on PeerFinder."
+                f"<br/><br/>Best regards,<br/><strong>Peer Finder Team</strong>"
+            )
+            try:
+                send_email(ghoster_email, subject, body, g_prog, is_html=True)
+            except Exception as e:
+                logger.error(f"Error sending ghosting nudge email: {e}")
 
-            # Delete if they are standard Study Buddy or Group Member
+            # Only remove Study Buddy / Group members — volunteers stay in the marketplace
             if g_type in ['find', 'group']:
-                df.drop(index=g_idx, inplace=True)
+                df = df.drop(index=g_idx)  # reassign — safer than inplace=True
 
-    # 3. Unpair Operations (using latest indices just in case ghoster was dropped)
-    old_group_id = df.at[idx, 'group_id'] if idx in df.index else ''
-    if old_group_id:
-        remaining_members = df[df['group_id'] == old_group_id]
-        if len(remaining_members) == 2: # 1 other person left
-            rem_idx = remaining_members[remaining_members['id'] != target_id].index[0]
-            df.at[rem_idx, 'matched'] = False
-            df.at[rem_idx, 'group_id'] = ''
-            df.at[rem_idx, 'timestamp'] = datetime.now(timezone.utc).isoformat()
-            df.at[rem_idx, 'match_attempted'] = False
-        elif user_row.get('connection_type') == 'offer':
-             others_idx = remaining_members[remaining_members['id'] != target_id].index.tolist()
-             for o_idx in others_idx:
-                  df.at[o_idx, 'matched'] = False
-                  df.at[o_idx, 'group_id'] = ''
-                  df.at[o_idx, 'timestamp'] = datetime.now(timezone.utc).isoformat()
-                  df.at[o_idx, 'match_attempted'] = False
-        else:
-             vol_idx = df.index[(df['group_id'] == old_group_id) & (df['connection_type'] == 'offer')].tolist()
-             if vol_idx: df.at[vol_idx[0], 'current_load'] = max(0, int(df.at[vol_idx[0], 'current_load']) - 1)
+    # 3. Group dissolution
+    # Re-check idx is still valid (edge case: user somehow matched ghoster's email)
+    if idx not in df.index:
+        upload_csv(df)
+        return jsonify({"success": True})
 
+    old_group_id = str(df.at[idx, 'group_id']).strip()
+
+    if old_group_id and old_group_id not in ('', 'nan'):
+        other_members = df[(df['group_id'] == old_group_id) & (df['id'] != target_id)]
+
+        if not other_members.empty:
+            # Update volunteer's capacity counter if one exists in the group
+            vol_in_group = other_members[other_members['connection_type'] == 'offer']
+            if not vol_in_group.empty:
+                v_idx = vol_in_group.index[0]
+                df.at[v_idx, 'current_load'] = max(0, int(df.at[v_idx, 'current_load'] or 0) - 1)
+
+            # FIX B: Free ALL other non-volunteer members — works for 2-person pairs,
+            # volunteer groups, AND groups of 3–5 find/group learners.
+            for o_idx in other_members.index.tolist():
+                if str(df.at[o_idx, 'connection_type']) != 'offer':
+                    df.at[o_idx, 'matched'] = False
+                    df.at[o_idx, 'group_id'] = ''
+                    df.at[o_idx, 'timestamp'] = datetime.now(timezone.utc).isoformat()
+                    df.at[o_idx, 'match_attempted'] = False
+
+    # 4. Free or delete the requesting user
     if delete_profile:
-        if idx in df.index: df = df.drop(index=idx)
+        if idx in df.index:
+            df = df.drop(index=idx)
     else:
         if idx in df.index:
             df.at[idx, 'matched'] = False
