@@ -74,10 +74,15 @@ const AdminPage = () => {
         setModal({ ...modal, isOpen: false });
         setLoading(true);
         try {
-          const res = await axios.post(`${API_URL}/api/admin/auto-match-queue`, { password });
+          // Timeout set to 90s — backend sends emails in background so response is quick,
+          // but give extra headroom for large CSV downloads on Render free tier
+          const res = await axios.post(`${API_URL}/api/admin/auto-match-queue`, { password }, { timeout: 90000 });
           handleResult(res.data.success, res.data.message);
         } catch (err) {
-          handleResult(false, err.response?.data?.error || err.message);
+          const msg = err.code === 'ECONNABORTED'
+            ? 'The request timed out. The auto-match may still be running on the server — refresh the page in a few seconds to check.'
+            : (err.response?.data?.error || err.message);
+          handleResult(false, msg);
         } finally { setLoading(false); }
       }
     });
@@ -110,9 +115,10 @@ const AdminPage = () => {
 
   const executeUnpair = async (userId) => {
     try {
-      const res = await axios.post(`${API_URL}/api/unpair/${userId}`, { reason: "Admin Dissolved Group" });
+      // FIX: was hitting /api/unpair/:id which doesn't exist — correct route is /api/leave-group
+      const res = await axios.post(`${API_URL}/api/leave-group`, { user_id: userId, reason: "Admin Dissolved Group", delete_profile: false });
       handleResult(res.data.success, "Group dissolved.");
-    } catch (err) { handleResult(false, err.message); }
+    } catch (err) { handleResult(false, err.response?.data?.error || err.message); }
   };
 
   const handleResult = (success, msg) => {
