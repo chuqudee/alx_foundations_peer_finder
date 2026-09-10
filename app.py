@@ -391,6 +391,29 @@ def get_course_num(course_str):
         return int(match.group(1)) if match else 0
     except: return 0
 
+# --- Staged course relaxation for find/group matching ---
+# New registrants get the best-fit (exact course) match first. The longer someone
+# waits unmatched, the wider the pool we search — so nobody gets stuck forever in a
+# thin course, but people who CAN get an exact match still get one.
+COURSE_RELAX_STAGE1_DAYS = 14  # exact course only, up to this many days waiting
+COURSE_RELAX_STAGE2_DAYS = 30  # widen to +/-1 course up to this many days; any course after
+
+def get_wait_days(user):
+    """Days since this user's last state change (registration, or last unpair)."""
+    try:
+        ts = pd.to_datetime(user.get('timestamp'), utc=True, errors='coerce')
+        if pd.isna(ts): return 0
+        return (datetime.now(timezone.utc) - ts).days
+    except Exception:
+        return 0
+
+def course_relaxation_ok(user_course_num, candidate_course_num, wait_days):
+    if wait_days < COURSE_RELAX_STAGE1_DAYS:
+        return candidate_course_num == user_course_num
+    elif wait_days < COURSE_RELAX_STAGE2_DAYS:
+        return abs(candidate_course_num - user_course_num) <= 1
+    return True  # any course within the same program
+
 # === THE SMART MATCHING ENGINE ===
 def perform_matching(df, user_id):
     """
@@ -432,16 +455,33 @@ def perform_matching(df, user_id):
         if not size_str or not size_str.isdigit(): size_str = '2'
         target_size = int(size_str)
 
+        # --- Staged relaxation: how wide a course window this user is allowed to search today ---
+        wait_days = get_wait_days(user)
+        u_course_num = get_course_num(user['course'])
+
+        program_only_pool = df[
+            (df['matched'] == False) &
+            (df['program'].apply(normalize_str) == u_program) &
+            (df['id'] != user_id)
+        ].copy()
+        program_only_pool['course_num'] = program_only_pool['course'].apply(get_course_num)
+        candidate_pool = program_only_pool[
+            program_only_pool['course_num'].apply(lambda c: course_relaxation_ok(u_course_num, c, wait_days))
+        ]
+
         # --- STEP 1: Try to join an existing INCOMPLETE group ---
-        # Look for matched groups with the same program/course/size that still have room
+        # Look for matched groups with the same program/size (within the relaxed course window) that still have room
         existing_members_df = df[
             (df['matched'] == True) &
             (df['program'].apply(normalize_str) == u_program) &
-            (df['course'].apply(normalize_str) == u_course) &
             (df['connection_type'].isin(['find', 'group'])) &
             (df['group_size'].astype(str).str.replace('.0', '', regex=False).str.strip() == size_str) &
             (df['group_id'].astype(str).str.strip() != '') &
             (df['id'] != user_id)
+        ].copy()
+        existing_members_df['course_num'] = existing_members_df['course'].apply(get_course_num)
+        existing_members_df = existing_members_df[
+            existing_members_df['course_num'].apply(lambda c: course_relaxation_ok(u_course_num, c, wait_days))
         ]
 
         for existing_gid, grp_members in existing_members_df.groupby('group_id'):
@@ -460,15 +500,17 @@ def perform_matching(df, user_id):
 
         if not updated:
             # --- STEP 2: Start a NEW group with compatible peers (gradual — even 1 peer is enough) ---
-            base_pool = program_pool[
-                program_pool['connection_type'].isin(['find', 'group']) &
-                program_pool['group_size'].astype(str).str.replace('.0', '', regex=False).str.strip().eq(size_str)
+            base_pool = candidate_pool[
+                candidate_pool['connection_type'].isin(['find', 'group']) &
+                candidate_pool['group_size'].astype(str).str.replace('.0', '', regex=False).str.strip().eq(size_str)
             ].copy()
 
             compatible_indices = [
                 pool_idx for pool_idx, p_user in base_pool.iterrows()
                 if check_compatibility(user.to_dict(), p_user.to_dict())
             ]
+            # Within the allowed window, still prefer the closest course match first
+            compatible_indices.sort(key=lambda pool_idx: abs(base_pool.at[pool_idx, 'course_num'] - u_course_num))
 
             if compatible_indices:
                 # Form the group now with whoever is compatible (up to target_size - 1)
