@@ -54,7 +54,13 @@ SESSION_FEEDBACK_OBJECT_KEY = 'alx-master-session_feedback.csv'
 NO_SHOW_OBJECT_KEY = 'alx-master-no_show.csv'
 UNPAIR_REASONS_KEY = 'alx-master-unpair_reasons.csv'
 
-ADMIN_PASSWORD = os.environ.get('ADMIN_PASSWORD', 'admin123')
+ADMIN_PASSWORD = os.environ.get('ADMIN_PASSWORD')
+if not ADMIN_PASSWORD:
+    logger.critical("SECURITY WARNING: ADMIN_PASSWORD environment variable is not set! "
+                    "Using a temporary random password — admin routes will be inaccessible until "
+                    "ADMIN_PASSWORD is set in your Render environment variables.")
+    import secrets as _secrets
+    ADMIN_PASSWORD = _secrets.token_hex(16)
 
 def load_google_token(env_var_name):
     token_str = os.environ.get(env_var_name)
@@ -334,12 +340,6 @@ def upload_csv(df, key=CSV_OBJECT_KEY):
 def normalize_str(val):
     if pd.isna(val) or val is None: return ""
     return re.sub(r'\s+', ' ', str(val)).strip().lower()
-
-def availability_match(a1, a2):
-    a1_clean = normalize_str(a1)
-    a2_clean = normalize_str(a2)
-    if not a1_clean or not a2_clean: return False
-    return (a1_clean == 'flexible' or a2_clean == 'flexible' or a1_clean == a2_clean)
 
 def parse_tz_offset(tz_str):
     if not tz_str or pd.isna(tz_str): return 0
