@@ -295,7 +295,8 @@ def notify_group_match(df, group_id, new_member_id=None):
 REQUIRED_COLUMNS = [
     'id', 'name', 'phone', 'email', 'country', 'language', 'program', 'course', 'learning_preferences', 'availability',
     'match_preference', 'connection_type', 'timestamp', 'matched', 'group_id', 'unpair_reason', 'matched_timestamp',
-    'match_attempted', 'volunteer_capacity', 'meeting_preference', 'timezone', 'group_size', 'pseudonym', 'current_load'
+    'match_attempted', 'volunteer_capacity', 'meeting_preference', 'timezone', 'group_size', 'pseudonym', 'current_load',
+    'consent_given', 'consent_at'
 ]
 
 def clean_boolean(val):
@@ -311,12 +312,21 @@ def download_csv(key=CSV_OBJECT_KEY):
                 if col not in df.columns:
                     df[col] = False if col in ['matched', 'match_attempted'] else 0 if col == 'current_load' else ''
 
-            str_cols = ['id', 'name', 'phone', 'email', 'country', 'program', 'course', 'availability', 'connection_type', 'group_id', 'match_preference', 'learning_preferences', 'unpair_reason', 'timestamp', 'matched_timestamp', 'timezone', 'meeting_preference', 'volunteer_capacity', 'group_size', 'pseudonym']
+            str_cols = ['id', 'name', 'phone', 'email', 'country', 'program', 'course', 'availability', 'connection_type', 'group_id', 'match_preference', 'learning_preferences', 'unpair_reason', 'timestamp', 'matched_timestamp', 'timezone', 'meeting_preference', 'volunteer_capacity', 'group_size', 'pseudonym', 'consent_at']
             for c in str_cols:
                 if c in df.columns: df[c] = df[c].astype(str).str.replace(r'\.0$', '', regex=True).str.replace(r'\s+', ' ', regex=True).str.strip().replace('nan', '')
 
             if 'matched' in df.columns: df['matched'] = df['matched'].apply(clean_boolean)
             if 'match_attempted' in df.columns: df['match_attempted'] = df['match_attempted'].apply(clean_boolean)
+            if 'consent_given' in df.columns: df['consent_given'] = df['consent_given'].apply(clean_boolean)
+            # Collapsed the old 4-tier preference system to 3 (Buffer already covers
+            # everything Timezone did — same_tz implies within_buffer). Normalize any
+            # legacy 'Timezone' rows so old registrants keep their existing pool, not a
+            # silent upgrade to 'Global'.
+            if 'match_preference' in df.columns:
+                df['match_preference'] = df['match_preference'].apply(
+                    lambda v: 'Buffer' if normalize_str(v) == 'timezone' else v
+                )
             if 'email' in df.columns: df['email'] = df['email'].str.lower()
         return df
     except ClientError:
@@ -357,12 +367,11 @@ def check_compatibility(user_a, peer_b):
     Returns True if BOTH users' match preferences are mutually satisfied.
 
     Preference hierarchy (each includes all levels below it):
-      Country  ⊂  Timezone  ⊂  Buffer  ⊂  Global
+      Country  ⊂  Buffer (+/- 2hrs)  ⊂  Global
 
     Examples:
     - Chuks(Kenya, Country) + Claude(Kenya, Global) → True  ✓
     - Chuks(Ghana, Buffer)  + Claude(Ghana, Global) → True  ✓
-    - Chuks(Egypt, Country) + Me(Egypt, Buffer)     → True  ✓
     - Chuks(Kenya, Country) + Claude(Ghana, Global) → False ✓ (Chuks only wants Kenya)
     """
     pref_a = normalize_str(user_a.get('match_preference', 'global'))
@@ -374,13 +383,11 @@ def check_compatibility(user_a, peer_b):
 
     tz_a = parse_tz_offset(user_a.get('timezone', ''))
     tz_b = parse_tz_offset(peer_b.get('timezone', ''))
-    same_tz = (tz_a == tz_b)
     within_buffer = (abs(tz_a - tz_b) <= 2)
 
     def is_satisfied(pref):
-        if pref == 'country':  return same_country
-        if pref == 'timezone': return same_country or same_tz
-        if pref == 'buffer':   return same_country or same_tz or within_buffer
+        if pref == 'country': return same_country
+        if pref == 'buffer':  return same_country or within_buffer
         return True  # 'global' accepts anyone; also the safe fallback
 
     return is_satisfied(pref_a) and is_satisfied(pref_b)
@@ -620,6 +627,7 @@ def register():
         return jsonify({"success": False, "is_duplicate": True, "user_id": str(existing['id']), "already_matched": bool(existing['matched'])})
 
     new_id = str(uuid.uuid4())
+    peer_supporter_consent = clean_boolean(data.get('peer_supporter_consent', False))
     new_user = {
         'id': new_id, 'name': data['name'], 'email': email, 'phone': phone,
         'program': data['program'], 'course': data['course'], 'country': data.get('country', ''),
@@ -630,7 +638,9 @@ def register():
         'timestamp': datetime.now(timezone.utc).isoformat(), 'matched': False, 'group_id': '', 'unpair_reason': '',
         'matched_timestamp': '', 'match_attempted': False, 'volunteer_capacity': capacity_val,
         'current_load': 0, 'meeting_preference': data.get('meeting_preference', 'All'), 'timezone': data.get('timezone', ''),
-        'pseudonym': data.get('pseudonym', '')
+        'pseudonym': data.get('pseudonym', ''),
+        'consent_given': peer_supporter_consent,
+        'consent_at': datetime.now(timezone.utc).isoformat() if peer_supporter_consent else ''
     }
 
     target_volunteer_id = data.get('target_volunteer_id')
@@ -736,7 +746,8 @@ def status(identifier):
             "user": {
                 "name": u['name'], "program": u.get('program', ''), "course": u['course'],
                 "connection_type": str(u.get('connection_type', '')),
-                "volunteer_capacity": str(u.get('volunteer_capacity', ''))
+                "volunteer_capacity": str(u.get('volunteer_capacity', '')),
+                "consent_given": bool(u.get('consent_given', False))
             },
             "real_id": str(u['id'])
         }
@@ -749,6 +760,33 @@ def status(identifier):
         res_list.append(res)
 
     return jsonify(res_list)
+
+@app.route('/api/consent/peer-supporter', methods=['POST'])
+@api_wrapper
+def set_peer_supporter_consent():
+    data = request.get_json()
+    user_id = data.get('user_id')
+    consent = clean_boolean(data.get('consent', False))
+    if not user_id:
+        return jsonify({"success": False, "error": "user_id is required"}), 400
+
+    df = download_csv()
+    idx = df.index[df['id'] == user_id].tolist()
+    if not idx:
+        return jsonify({"success": False, "error": "Registration not found"}), 404
+
+    # Peer-supporter consent only makes sense for people looking for a peer
+    # themselves (find/group) who are also willing to help someone else —
+    # official volunteers already opt in via the 'offer' registration itself.
+    conn_type = str(df.at[idx[0], 'connection_type'])
+    if conn_type not in ['find', 'group']:
+        return jsonify({"success": False, "error": "Peer-supporter consent isn't applicable to this registration type"}), 400
+
+    df.at[idx[0], 'consent_given'] = consent
+    df.at[idx[0], 'consent_at'] = datetime.now(timezone.utc).isoformat() if consent else ''
+    upload_csv(df)
+
+    return jsonify({"success": True, "consent_given": consent})
 
 AUTO_MATCH_STATUS = {"running": False, "last_started": None, "last_finished": None, "last_message": None}
 _auto_match_lock = threading.Lock()
