@@ -750,67 +750,111 @@ def status(identifier):
 
     return jsonify(res_list)
 
+AUTO_MATCH_STATUS = {"running": False, "last_started": None, "last_finished": None, "last_message": None}
+_auto_match_lock = threading.Lock()
+
+def _run_auto_match_queue_job():
+    global AUTO_MATCH_STATUS
+    try:
+        df = download_csv()
+        unmatched = df[df['matched'] == False]
+
+        if unmatched.empty:
+            AUTO_MATCH_STATUS.update({
+                "running": False,
+                "last_finished": datetime.now(timezone.utc).isoformat(),
+                "last_message": "Queue is clear — no unmatched learners found."
+            })
+            return
+
+        total_before = len(unmatched)
+        groups_formed = []
+
+        for uid in unmatched['id'].tolist():
+            try:
+                current_check = df[df['id'] == uid]
+                if not current_check.empty and bool(current_check.iloc[0]['matched']): continue
+                # FIX C: wrapped in try/except — one bad row no longer aborts the entire queue
+                df, updated, gid, _ = perform_matching(df, uid)
+                if updated: groups_formed.append(gid)
+            except Exception as e:
+                logger.error(f"Auto-match skipped user {uid}: {e}")
+                continue
+
+        upload_csv(df)
+        unique_groups = set(groups_formed)
+        pending_after = len(df[df['matched'] == False])
+
+        if unique_groups:
+            snapshot_df = df.copy()
+            for gid in unique_groups:
+                try:
+                    notify_group_match(snapshot_df, gid)
+                except Exception as e:
+                    logger.error(f"Background email error for group {gid}: {e}")
+
+        if not unique_groups:
+            msg = (
+                f"Processed {total_before} learner(s) in the queue — no compatible matches could be formed yet. "
+                f"Groups may still be incomplete (not enough peers with compatible preferences). "
+                f"{pending_after} learner(s) remain in queue."
+            )
+        else:
+            msg = (
+                f"Auto-match complete! Formed {len(unique_groups)} new group(s) from {total_before} queued learner(s). "
+                f"Match emails sent. {pending_after} learner(s) remain in queue."
+            )
+
+        AUTO_MATCH_STATUS.update({
+            "running": False,
+            "last_finished": datetime.now(timezone.utc).isoformat(),
+            "last_message": msg
+        })
+    except Exception as e:
+        logger.error(f"Auto-match queue job failed: {e}")
+        AUTO_MATCH_STATUS.update({
+            "running": False,
+            "last_finished": datetime.now(timezone.utc).isoformat(),
+            "last_message": f"Auto-match queue failed: {e}"
+        })
+
 @app.route('/api/admin/auto-match-queue', methods=['POST'])
 @api_wrapper
 def auto_match_queue():
     data = request.get_json()
     if data.get('password') != ADMIN_PASSWORD: return jsonify({"error": "Unauthorized"}), 401
 
-    df = download_csv()
-    unmatched = df[df['matched'] == False]
-
-    if unmatched.empty:
-        return jsonify({"success": True, "message": "Queue is clear — no unmatched learners found."})
-
-    total_before = len(unmatched)
-    groups_formed = []
-
-    for uid in unmatched['id'].tolist():
-        try:
-            current_check = df[df['id'] == uid]
-            if not current_check.empty and bool(current_check.iloc[0]['matched']): continue
-            # FIX C: wrapped in try/except — one bad row no longer aborts the entire queue
-            df, updated, gid, _ = perform_matching(df, uid)
-            if updated: groups_formed.append(gid)
-        except Exception as e:
-            logger.error(f"Auto-match skipped user {uid}: {e}")
-            continue
-
-    upload_csv(df)
-    unique_groups = set(groups_formed)
-    pending_after = len(df[df['matched'] == False])
-
-    # FIX: Send emails in a background thread so the HTTP response returns immediately
-    # (avoids Render's 30-second request timeout when many groups are formed)
-    if unique_groups:
-        snapshot_df = df.copy()
-        def send_emails_background():
-            for gid in unique_groups:
-                try:
-                    notify_group_match(snapshot_df, gid)
-                except Exception as e:
-                    logger.error(f"Background email error for group {gid}: {e}")
-        t = threading.Thread(target=send_emails_background, daemon=True)
-        t.start()
-
-    if not unique_groups:
-        return jsonify({
-            "success": True,
-            "message": (
-                f"Processed {total_before} learner(s) in the queue — no compatible matches could be formed yet. "
-                f"Groups may still be incomplete (not enough peers with compatible preferences). "
-                f"{pending_after} learner(s) remain in queue."
-            )
+    # FIX: run the whole job in a background thread and return immediately.
+    # Render's platform proxy kills requests around 30s regardless of the client's
+    # own timeout setting — with 200+ learners in the queue, the old synchronous
+    # version could blow past that, and the browser would see a raw "Network Error"
+    # instead of a real response. This also makes the route safe to call from a
+    # scheduled cron job, which needs the same fast response.
+    with _auto_match_lock:
+        if AUTO_MATCH_STATUS["running"]:
+            return jsonify({
+                "success": True, "already_running": True,
+                "message": "Auto-match queue is already running — check back shortly."
+            })
+        AUTO_MATCH_STATUS.update({
+            "running": True,
+            "last_started": datetime.now(timezone.utc).isoformat(),
+            "last_message": None
         })
 
+    threading.Thread(target=_run_auto_match_queue_job, daemon=True).start()
+
     return jsonify({
-        "success": True,
-        "message": (
-            f"Auto-match complete! Formed {len(unique_groups)} new group(s) from {total_before} queued learner(s). "
-            f"Match emails are being sent in the background. "
-            f"{pending_after} learner(s) remain in queue."
-        )
+        "success": True, "started": True,
+        "message": "Auto-match queue started in the background. Large queues can take a minute or two — check status to see when it's done."
     })
+
+@app.route('/api/admin/auto-match-queue/status', methods=['POST'])
+@api_wrapper
+def auto_match_queue_status():
+    data = request.get_json()
+    if data.get('password') != ADMIN_PASSWORD: return jsonify({"error": "Unauthorized"}), 401
+    return jsonify({"success": True, **AUTO_MATCH_STATUS})
 
 # --- FIXED UNPAIRING LOGIC ---
 @app.route('/api/leave-group', methods=['POST'])
