@@ -1,0 +1,17 @@
+name: Daily Auto-Match Queue
+
+on:
+  schedule:
+    - cron: '0 3 * * *'  # 3 AM UTC daily — edit this to your preferred time
+  workflow_dispatch:      # lets you trigger it manually from the Actions tab too
+
+jobs:
+  trigger-auto-match:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call the auto-match-queue endpoint
+        run: |
+          curl -s -X POST https://alx-foundations-peer-finder.onrender.com/api/admin/auto-match-queue \
+            -H "Content-Type: application/json" \
+            -d "{\"password\": \"${{ secrets.ADMIN_PASSWORD }}\"}" \
+            --max-time 60
